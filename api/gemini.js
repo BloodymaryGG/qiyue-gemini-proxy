@@ -10,7 +10,9 @@ export default async function handler(req) {
     return new Response('forbidden', { status: 403 });
   }
   /* Vercel Node 函数里 req.url 是相对路径，必须补 base 再解析 */
-  const url = new URL(req.url || '/', 'https://local');
+  const host = req.headers['host'] || 'localhost';
+  const protocol = req.headers['x-forwarded-proto'] || 'https';
+  const url = new URL(req.url || '/', `${protocol}://${host}`);
   const path = url.pathname.replace(/^\/api\/gemini/, '') || '/';
   const target = 'https://generativelanguage.googleapis.com' + path + (url.search || '');
 
