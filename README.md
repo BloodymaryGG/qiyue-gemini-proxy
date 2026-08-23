@@ -4,6 +4,8 @@ Cloudflare 边缘（香港节点）直连 Google Gemini 会被地区限制拦截
 本仓库是一个部署在 **Vercel 美东（iad1）** 的纯净反向代理：把请求转发到
 `generativelanguage.googleapis.com`，不携带任何客户端来源 IP 头。
 
+路由：`/api/gemini`（函数位于 `api/gemini.js`）。
+
 ## 部署
 
 1. 在 Vercel（vercel.com）导入本仓库 → Deploy（区域已由代码锁定美东 iad1）
