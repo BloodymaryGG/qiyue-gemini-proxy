@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/gemini", "destination": "/api/proxy" },
+    { "source": "/api/gemini/:path*", "destination": "/api/proxy" }
+  ]
+}
