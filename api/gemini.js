@@ -14,6 +14,21 @@ export default async function handler(req) {
   const protocol = req.headers['x-forwarded-proto'] || 'https';
   const url = new URL(req.url || '/', `${protocol}://${host}`);
   const path = url.pathname.replace(/^\/api\/gemini/, '') || '/';
+
+  /* 裸访问 /api/gemini（浏览器或误配置探测）时直接快速响应，
+     不要转发 Google 根路径——空 GET 不带 API Key 会挂起直到超时 */
+  if (path === '/') {
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        service: 'qiyue-gemini-proxy',
+        upstream: 'https://generativelanguage.googleapis.com',
+        usage: 'POST /api/gemini/v1beta/models/{model}:generateContent',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
   const target = 'https://generativelanguage.googleapis.com' + path + (url.search || '');
 
   const headers = {};
@@ -46,4 +61,5 @@ export default async function handler(req) {
 export const config = {
   runtime: 'nodejs',
   regions: ['iad1'], // 美东（Google Gemini API 支持区域）
+  maxDuration: 60, // 解读为流式输出，默认 10s 会中途掐断；上限按当前套餐（Hobby 60s/300s）取保守值
 };
