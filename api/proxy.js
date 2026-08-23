@@ -3,8 +3,9 @@
    Vercel /api 目录不支持 [...catchAll]，所以不能直接建动态 catch-all 文件。 */
 import { proxyHandler } from '../lib/proxy.js';
 export default proxyHandler;
+/* 注意：不设置 regions / maxDuration。
+   Hobby 免费版上 regions:['iad1'] 曾导致函数部署成功但调用一直挂起到超时，
+   先去掉这两个配置，用默认区域验证函数本体是否正常。 */
 export const config = {
   runtime: 'nodejs',
-  regions: ['iad1'],
-  maxDuration: 60,
 };
