@@ -32,6 +32,7 @@ export default async function handler(req, res) {
     if ((!input && !attachment) || input.length > 2000) return send(res, { error: 'invalid_input' }, 400);
     if (attachment && (!attachment.data || !attachment.mimeType || String(attachment.data).length > 8_000_000)) return send(res, { error: 'invalid_attachment' }, 400);
     const model = process.env.TODOAI_GEMINI_MODEL || 'gemini-2.5-flash-lite';
+    const nowIso = new Date().toISOString();
     const parts = [];
     if (input) parts.push({ text: input });
     if (attachment) {
@@ -45,7 +46,7 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-goog-api-key': apiKey },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: '你是待办事项规划助手。只根据用户输入生成计划，不要编造具体日期；无法判断日期时返回空字符串。输出必须符合 JSON Schema。当前时间使用服务器时间。' }] },
+        systemInstruction: { parts: [{ text: `你是待办事项规划助手。当前服务器时间是 ${nowIso}。相对日期（今天、明天、下周）必须以这个时间为基准计算；不要使用过去年份。所有日期必须输出 ISO 8601 且带 Z 时区，例如 2026-09-14T09:00:00Z；无法判断日期时返回空字符串。只根据用户输入生成计划，输出必须符合 JSON Schema。` }] },
         contents: [{ role: 'user', parts }],
         generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: PLAN_SCHEMA },
       }),
