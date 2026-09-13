@@ -7,8 +7,12 @@ const PLAN_SCHEMA = {
     priority: { type: 'string', enum: ['low', 'normal', 'high'] },
     estimatedMinutes: { type: 'integer' },
     subtasks: { type: 'array', items: { type: 'string' } },
+    urgencyScore: { type: 'integer' },
+    urgencyLabel: { type: 'string' },
+    aiReason: { type: 'string' },
+    nextStep: { type: 'string' },
   },
-  required: ['title', 'dueDate', 'reminderDate', 'priority', 'estimatedMinutes', 'subtasks'],
+  required: ['title', 'dueDate', 'reminderDate', 'priority', 'estimatedMinutes', 'subtasks', 'urgencyScore', 'urgencyLabel', 'aiReason', 'nextStep'],
 };
 
 const attempts = new Map();
@@ -46,7 +50,7 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-goog-api-key': apiKey },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: `你是待办事项规划助手。当前服务器时间是 ${nowIso}。相对日期（今天、明天、下周）必须以这个时间为基准计算；不要使用过去年份。所有日期必须输出 ISO 8601 且带 Z 时区，例如 2026-09-14T09:00:00Z；无法判断日期时返回空字符串。只根据用户输入生成计划，输出必须符合 JSON Schema。` }] },
+        systemInstruction: { parts: [{ text: `你是待办事项规划助手。当前服务器时间是 ${nowIso}。相对日期（今天、明天、下周）必须以这个时间为基准计算；不要使用过去年份。所有日期必须输出 ISO 8601 且带 Z 时区，例如 2026-09-14T09:00:00Z；无法判断日期时返回空字符串。除了生成任务，还要评估 urgencyScore 0-100、urgencyLabel（紧急/重要/普通/可稍后）、aiReason 和 15-30 分钟内的 nextStep。只根据用户输入生成计划，输出必须符合 JSON Schema。` }] },
         contents: [{ role: 'user', parts }],
         generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: PLAN_SCHEMA },
       }),
@@ -62,6 +66,10 @@ export default async function handler(req, res) {
     plan.priority = ['low', 'normal', 'high'].includes(plan.priority) ? plan.priority : 'normal';
     plan.estimatedMinutes = Math.min(480, Math.max(5, Number(plan.estimatedMinutes) || 30));
     plan.subtasks = Array.isArray(plan.subtasks) ? plan.subtasks.filter((item) => String(item).trim()).slice(0, 8) : [];
+    plan.urgencyScore = Math.min(100, Math.max(0, Number(plan.urgencyScore) || 50));
+    plan.urgencyLabel = ['紧急', '重要', '普通', '可稍后'].includes(plan.urgencyLabel) ? plan.urgencyLabel : '普通';
+    plan.aiReason = String(plan.aiReason || '根据任务截止时间和影响综合判断');
+    plan.nextStep = String(plan.nextStep || '先完成一个最小可执行步骤');
     if (plan.dueDate === '') plan.dueDate = null;
     if (plan.reminderDate === '') plan.reminderDate = null;
     return send(res, { ...plan, model }, 200);
