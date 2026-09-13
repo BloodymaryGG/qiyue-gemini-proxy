@@ -34,7 +34,7 @@ export default async function handler(req, res) {
     const input = String(body?.input || '').trim();
     const attachment = body?.attachment;
     if ((!input && !attachment) || input.length > 2000) return send(res, { error: 'invalid_input' }, 400);
-    if (attachment && (!attachment.data || !attachment.mimeType || String(attachment.data).length > 8_000_000)) return send(res, { error: 'invalid_attachment' }, 400);
+    if (attachment && (!attachment.data || !attachment.mimeType || String(attachment.data).length > 12_000_000)) return send(res, { error: 'invalid_attachment' }, 400);
     const model = process.env.TODOAI_GEMINI_MODEL || 'gemini-2.5-flash-lite';
     const nowIso = new Date().toISOString();
     const parts = [];
