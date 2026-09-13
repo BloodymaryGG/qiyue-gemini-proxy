@@ -9,7 +9,6 @@ const PLAN_SCHEMA = {
     subtasks: { type: 'array', items: { type: 'string' } },
   },
   required: ['title', 'dueDate', 'reminderDate', 'priority', 'estimatedMinutes', 'subtasks'],
-  additionalProperties: false,
 };
 
 const attempts = new Map();
@@ -53,8 +52,8 @@ export default async function handler(req, res) {
     });
     const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok) {
-      console.warn('[todoai/plan] Gemini rejected request', upstream.status, JSON.stringify(data).slice(0, 1000));
-      return send(res, { error: 'gemini_request_failed', status: upstream.status, reason: data.error?.message || 'upstream rejected request' }, upstream.status >= 500 ? 502 : upstream.status);
+      console.warn('[todoai/plan] Gemini rejected request', upstream.status, data.error?.message || 'upstream rejected request');
+      return send(res, { error: 'gemini_request_failed', status: upstream.status }, upstream.status >= 500 ? 502 : upstream.status);
     }
     const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
     const plan = JSON.parse(text);
