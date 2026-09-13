@@ -58,6 +58,10 @@ export default async function handler(req, res) {
     }
     const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
     const plan = JSON.parse(text);
+    plan.title = String(plan.title || '').trim() || input || attachment?.filename || '处理附件';
+    plan.priority = ['low', 'normal', 'high'].includes(plan.priority) ? plan.priority : 'normal';
+    plan.estimatedMinutes = Math.min(480, Math.max(5, Number(plan.estimatedMinutes) || 30));
+    plan.subtasks = Array.isArray(plan.subtasks) ? plan.subtasks.filter((item) => String(item).trim()).slice(0, 8) : [];
     if (plan.dueDate === '') plan.dueDate = null;
     if (plan.reminderDate === '') plan.reminderDate = null;
     return send(res, { ...plan, model }, 200);
