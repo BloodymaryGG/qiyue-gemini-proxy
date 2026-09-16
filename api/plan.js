@@ -32,6 +32,8 @@ export default async function handler(req, res) {
   try {
     const body = typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
     const input = String(body?.input || '').trim();
+    const language = String(body?.language || '').startsWith('zh') ? 'zh-Hans' : 'en';
+    const outputLanguage = language === 'zh-Hans' ? 'Simplified Chinese' : 'English';
     const attachment = body?.attachment;
     if ((!input && !attachment) || input.length > 2000) return send(res, { error: 'invalid_input' }, 400);
     if (attachment && (!attachment.data || !attachment.mimeType || String(attachment.data).length > 12_000_000)) return send(res, { error: 'invalid_attachment' }, 400);
@@ -41,7 +43,8 @@ export default async function handler(req, res) {
     if (input) parts.push({ text: input });
     if (attachment) {
       if (attachment.mimeType.startsWith('text/')) {
-        parts.push({ text: `附件 ${attachment.filename || '文件'} 的内容：\n${Buffer.from(attachment.data, 'base64').toString('utf8').slice(0, 40000)}` });
+        const attachmentLabel = language === 'zh-Hans' ? `附件 ${attachment.filename || '文件'} 的内容` : `Contents of attachment ${attachment.filename || 'file'}`;
+        parts.push({ text: `${attachmentLabel}:\n${Buffer.from(attachment.data, 'base64').toString('utf8').slice(0, 40000)}` });
       } else {
         parts.push({ inlineData: { mimeType: attachment.mimeType, data: attachment.data } });
       }
@@ -50,7 +53,7 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-goog-api-key': apiKey },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: `你是待办事项规划助手。当前服务器时间是 ${nowIso}。相对日期（今天、明天、下周）必须以这个时间为基准计算；不要使用过去年份。所有日期必须输出 ISO 8601 且带 Z 时区，例如 2026-09-14T09:00:00Z；无法判断日期时返回空字符串。除了生成任务，还要评估 urgencyScore 0-100、urgencyLabel（紧急/重要/普通/可稍后）、aiReason 和 15-30 分钟内的 nextStep。只根据用户输入生成计划，输出必须符合 JSON Schema。` }] },
+        systemInstruction: { parts: [{ text: `You are a task-planning assistant. The current server time is ${nowIso}. Resolve relative dates from this time and never use a past year. Return all dates as ISO 8601 with a Z timezone, for example 2026-09-14T09:00:00Z; return an empty string when a date cannot be inferred. Generate the task and assess urgencyScore from 0-100, urgencyLabel, aiReason, and a nextStep doable within 15-30 minutes. Use only the user's input. Write title, subtasks, urgencyLabel, aiReason, and nextStep in ${outputLanguage}. The urgencyLabel must be one of ${language === 'zh-Hans' ? '紧急, 重要, 普通, 可稍后' : 'Urgent, Important, Normal, Can Wait'}. Output must match the JSON Schema.` }] },
         contents: [{ role: 'user', parts }],
         generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: PLAN_SCHEMA },
       }),
@@ -62,14 +65,15 @@ export default async function handler(req, res) {
     }
     const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
     const plan = JSON.parse(text);
-    plan.title = String(plan.title || '').trim() || input || attachment?.filename || '处理附件';
+    plan.title = String(plan.title || '').trim() || input || attachment?.filename || (language === 'zh-Hans' ? '处理附件' : 'Process attachment');
     plan.priority = ['low', 'normal', 'high'].includes(plan.priority) ? plan.priority : 'normal';
     plan.estimatedMinutes = Math.min(480, Math.max(5, Number(plan.estimatedMinutes) || 30));
     plan.subtasks = Array.isArray(plan.subtasks) ? plan.subtasks.filter((item) => String(item).trim()).slice(0, 8) : [];
     plan.urgencyScore = Math.min(100, Math.max(0, Number(plan.urgencyScore) || 50));
-    plan.urgencyLabel = ['紧急', '重要', '普通', '可稍后'].includes(plan.urgencyLabel) ? plan.urgencyLabel : '普通';
-    plan.aiReason = String(plan.aiReason || '根据任务截止时间和影响综合判断');
-    plan.nextStep = String(plan.nextStep || '先完成一个最小可执行步骤');
+    const urgencyLabels = language === 'zh-Hans' ? ['紧急', '重要', '普通', '可稍后'] : ['Urgent', 'Important', 'Normal', 'Can Wait'];
+    plan.urgencyLabel = urgencyLabels.includes(plan.urgencyLabel) ? plan.urgencyLabel : urgencyLabels[2];
+    plan.aiReason = String(plan.aiReason || (language === 'zh-Hans' ? '根据任务截止时间和影响综合判断' : 'Based on the deadline and expected impact'));
+    plan.nextStep = String(plan.nextStep || (language === 'zh-Hans' ? '先完成一个最小可执行步骤' : 'Complete one small actionable step first'));
     if (plan.dueDate === '') plan.dueDate = null;
     if (plan.reminderDate === '') plan.reminderDate = null;
     return send(res, { ...plan, model }, 200);
