@@ -1,3 +1,5 @@
+import { fetchGemini } from '../lib/todoai-gemini.js';
+
 const COMMAND_SCHEMA = {
   type: 'object',
   properties: {
@@ -41,22 +43,24 @@ export default async function handler(req, res) {
     const tasks = Array.isArray(body?.tasks) ? body.tasks.slice(0, 80) : [];
     if (!message || message.length > 2000) return send(res, { error: 'invalid_message' }, 400);
     const model = process.env.TODOAI_GEMINI_MODEL || 'gemini-2.5-flash-lite';
+    const fallbackModel = process.env.TODOAI_GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash';
     const nowIso = new Date().toISOString();
     const context = tasks.map((task) => JSON.stringify({
       id: String(task.id || ''), title: String(task.title || ''), notes: String(task.notes || '').slice(0, 300),
       dueDate: task.dueDate || null, reminderDate: task.reminderDate || null,
       priority: task.priority || 'normal', isCompleted: !!task.isCompleted, estimatedMinutes: Number(task.estimatedMinutes) || 30,
     })).join('\n');
-    const upstream = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-goog-api-key': apiKey },
-      body: JSON.stringify({
+    const upstream = await fetchGemini({ model, fallbackModel, apiKey, route: 'command', body: {
         systemInstruction: { parts: [{ text: `You are TodoAI's AI task coordinator. The current server time is ${nowIso}; resolve relative dates from this time and output dates as ISO 8601 with a Z timezone. Assess every incomplete task with urgencyScore 0-100 using deadline, impact, dependencies, procrastination risk, and estimated duration. urgencyLabel must be one of ${language === 'zh-Hans' ? '紧急, 重要, 普通, 可稍后' : 'Urgent, Important, Normal, Can Wait'}. Explain the basis in reason, give a nextStep doable within 15-30 minutes, and suggest an appropriate reminder time. Existing tasks must use their exact provided id. You may propose create, update, complete, or delete actions; new tasks use taskID new. If the user only asks a question or requests advice, actions must be empty. Every batch change, reschedule, completion, or deletion requires requiresConfirmation=true; never claim an action was already applied. Keep reply concise. Write all user-facing fields in ${outputLanguage}. Output only JSON matching the schema.` }] },
         contents: [{ role: 'user', parts: [{ text: `${language === 'zh-Hans' ? '用户指令' : 'User request'}: ${message}\n\n${language === 'zh-Hans' ? '当前任务列表' : 'Current tasks'} (JSONL):\n${context || (language === 'zh-Hans' ? '暂无任务' : 'No tasks')}` }] }],
         generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: COMMAND_SCHEMA },
-      }),
+      },
     });
     const data = await upstream.json().catch(() => ({}));
-    if (!upstream.ok) return send(res, { error: 'gemini_request_failed' }, upstream.status >= 500 ? 502 : upstream.status);
+    if (!upstream.ok) {
+      console.warn(`[todoai/command] Gemini rejected request status=${upstream.status}`);
+      return send(res, { error: 'gemini_request_failed', status: upstream.status }, upstream.status >= 500 ? 502 : upstream.status);
+    }
     const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
     const result = JSON.parse(text);
     const validIDs = new Set(tasks.map((task) => String(task.id || '')));

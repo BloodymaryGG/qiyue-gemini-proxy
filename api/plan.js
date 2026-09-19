@@ -1,3 +1,5 @@
+import { fetchGemini } from '../lib/todoai-gemini.js';
+
 const PLAN_SCHEMA = {
   type: 'object',
   properties: {
@@ -36,8 +38,11 @@ export default async function handler(req, res) {
     const outputLanguage = language === 'zh-Hans' ? 'Simplified Chinese' : 'English';
     const attachment = body?.attachment;
     if ((!input && !attachment) || input.length > 2000) return send(res, { error: 'invalid_input' }, 400);
-    if (attachment && (!attachment.data || !attachment.mimeType || String(attachment.data).length > 12_000_000)) return send(res, { error: 'invalid_attachment' }, 400);
+    // The iOS client limits the decoded attachment to 12 MB. Base64 expands
+    // it by roughly 4/3, so validate the encoded payload with headroom.
+    if (attachment && (!attachment.data || !attachment.mimeType || String(attachment.data).length > 16_000_000)) return send(res, { error: 'invalid_attachment' }, 400);
     const model = process.env.TODOAI_GEMINI_MODEL || 'gemini-2.5-flash-lite';
+    const fallbackModel = process.env.TODOAI_GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash';
     const nowIso = new Date().toISOString();
     const parts = [];
     if (input) parts.push({ text: input });
@@ -49,18 +54,15 @@ export default async function handler(req, res) {
         parts.push({ inlineData: { mimeType: attachment.mimeType, data: attachment.data } });
       }
     }
-    const upstream = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-goog-api-key': apiKey },
-      body: JSON.stringify({
+    const upstream = await fetchGemini({ model, fallbackModel, apiKey, route: 'plan', body: {
         systemInstruction: { parts: [{ text: `You are a task-planning assistant. The current server time is ${nowIso}. Resolve relative dates from this time and never use a past year. Return all dates as ISO 8601 with a Z timezone, for example 2026-09-14T09:00:00Z; return an empty string when a date cannot be inferred. Generate the task and assess urgencyScore from 0-100, urgencyLabel, aiReason, and a nextStep doable within 15-30 minutes. Use only the user's input. Write title, subtasks, urgencyLabel, aiReason, and nextStep in ${outputLanguage}. The urgencyLabel must be one of ${language === 'zh-Hans' ? '紧急, 重要, 普通, 可稍后' : 'Urgent, Important, Normal, Can Wait'}. Output must match the JSON Schema.` }] },
         contents: [{ role: 'user', parts }],
         generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: PLAN_SCHEMA },
-      }),
+      },
     });
     const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok) {
-      console.warn('[todoai/plan] Gemini rejected request', upstream.status, data.error?.message || 'upstream rejected request');
+      console.warn(`[todoai/plan] Gemini rejected request status=${upstream.status}`);
       return send(res, { error: 'gemini_request_failed', status: upstream.status }, upstream.status >= 500 ? 502 : upstream.status);
     }
     const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
