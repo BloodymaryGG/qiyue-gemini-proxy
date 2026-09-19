@@ -1,4 +1,20 @@
-# Gemini Proxy
+# Todo AI / QiYue AI Proxy
+
+This Vercel project can serve as the single server-side AI gateway for both
+applications. Todo AI uses an ordered provider chain: Gemini first, then Qwen,
+then DeepSeek when those providers are configured. Qwen and DeepSeek do not
+need the Gemini region workaround, but keeping them behind this gateway keeps
+API keys private and gives the iOS client one stable endpoint.
+
+Todo AI-specific environment variables:
+
+- `TODOAI_GEMINI_API_KEY`, optional `TODOAI_GEMINI_MODEL`
+- `TODOAI_QWEN_API_KEY`, optional `TODOAI_QWEN_MODEL`, `TODOAI_QWEN_BASE_URL`, `TODOAI_QWEN_VISION_MODEL`
+- `TODOAI_DEEPSEEK_API_KEY`, optional `TODOAI_DEEPSEEK_MODEL`, `TODOAI_DEEPSEEK_BASE_URL`
+- `TODOAI_PROVIDER_ORDER` (default: `gemini,qwen,deepseek`)
+
+Do not reuse QiYue's generic `LLM_API_KEY` in Todo AI. Separate variables keep
+the two products' usage and quotas distinguishable.
 
 Cloudflare 边缘（香港节点）直连 Google Gemini 会被地区限制拦截（`400 FAILED_PRECONDITION`）。
 本仓库是一个纯净反向代理：把请求转发到
