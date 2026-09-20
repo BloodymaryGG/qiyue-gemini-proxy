@@ -1,4 +1,5 @@
 import { fetchTodoAI } from '../lib/todoai-gemini.js';
+import { beginAIRequest, commitAIRequest, releaseAIRequest } from '../lib/access.js';
 
 const COMMAND_SCHEMA = {
   type: 'object',
@@ -28,6 +29,7 @@ const MAX_REQUESTS = 20;
 export default async function handler(req, res) {
   if (req.method !== 'POST') return send(res, { error: 'method_not_allowed' }, 405);
   if (req.headers['x-ai-app'] !== 'todoai') return send(res, { error: 'app_header_required' }, 403);
+  let quota;
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   const now = Date.now();
   const recent = (attempts.get(ip) || []).filter((time) => now - time < WINDOW_MS);
@@ -49,6 +51,8 @@ export default async function handler(req, res) {
       dueDate: task.dueDate || null, reminderDate: task.reminderDate || null,
       priority: task.priority || 'normal', isCompleted: !!task.isCompleted, estimatedMinutes: Number(task.estimatedMinutes) || 30,
     })).join('\n');
+    quota = await beginAIRequest(req);
+    if (!quota.allowed) return send(res, quota.body, quota.status);
     const upstream = await fetchTodoAI({ model, apiKey, route: 'command', body: {
         systemInstruction: { parts: [{ text: `You are TodoAI's AI task coordinator. The current server time is ${nowIso}; resolve relative dates from this time and output dates as ISO 8601 with a Z timezone. Assess every incomplete task with urgencyScore 0-100 using deadline, impact, dependencies, procrastination risk, and estimated duration. urgencyLabel must be one of ${language === 'zh-Hans' ? '紧急, 重要, 普通, 可稍后' : 'Urgent, Important, Normal, Can Wait'}. Explain the basis in reason, give a nextStep doable within 15-30 minutes, and suggest an appropriate reminder time. Existing tasks must use their exact provided id. You may propose create, update, complete, or delete actions; new tasks use taskID new. If the user only asks a question or requests advice, actions must be empty. Every batch change, reschedule, completion, or deletion requires requiresConfirmation=true; never claim an action was already applied. Keep reply concise. Write all user-facing fields in ${outputLanguage}. Output only JSON matching the schema.` }] },
         contents: [{ role: 'user', parts: [{ text: `${language === 'zh-Hans' ? '用户指令' : 'User request'}: ${message}\n\n${language === 'zh-Hans' ? '当前任务列表' : 'Current tasks'} (JSONL):\n${context || (language === 'zh-Hans' ? '暂无任务' : 'No tasks')}` }] }],
@@ -57,6 +61,7 @@ export default async function handler(req, res) {
     });
     const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok) {
+      await releaseAIRequest(quota);
       console.warn(`[todoai/command] Gemini rejected request status=${upstream.status}`);
       return send(res, { error: 'gemini_request_failed', status: upstream.status }, upstream.status >= 500 ? 502 : upstream.status);
     }
@@ -83,8 +88,11 @@ export default async function handler(req, res) {
     result.requiresConfirmation = result.actions.length > 0 ? true : !!result.requiresConfirmation;
     result.model = upstream.headers.get('x-todoai-model') || model;
     result.provider = upstream.headers.get('x-todoai-provider') || 'gemini';
+    await commitAIRequest(quota);
+    result.usage = quota.usage;
     return send(res, result, 200);
   } catch (error) {
+    if (quota) await releaseAIRequest(quota);
     console.warn('[todoai/command] request failed', error?.message || error);
     return send(res, { error: 'command_failed' }, 502);
   }

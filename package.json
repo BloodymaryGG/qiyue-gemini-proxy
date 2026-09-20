@@ -1,5 +1,9 @@
 {
   "name": "qiyue-gemini-proxy",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@upstash/redis": "^1.35.3",
+    "jose": "^6.1.0"
+  }
 }

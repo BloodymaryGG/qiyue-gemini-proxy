@@ -1,4 +1,5 @@
 import { fetchTodoAI } from '../lib/todoai-gemini.js';
+import { beginAIRequest, commitAIRequest, releaseAIRequest } from '../lib/access.js';
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -24,6 +25,7 @@ const MAX_REQUESTS = 30;
 export default async function handler(req, res) {
   if (req.method !== 'POST') return send(res, { error: 'method_not_allowed' }, 405);
   if (req.headers['x-ai-app'] !== 'todoai') return send(res, { error: 'app_header_required' }, 403);
+  let quota;
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   const now = Date.now();
   const recent = (attempts.get(ip) || []).filter((time) => now - time < WINDOW_MS);
@@ -41,6 +43,8 @@ export default async function handler(req, res) {
     // The iOS client limits the decoded attachment to 12 MB. Base64 expands
     // it by roughly 4/3, so validate the encoded payload with headroom.
     if (attachment && (!attachment.data || !attachment.mimeType || String(attachment.data).length > 16_000_000)) return send(res, { error: 'invalid_attachment' }, 400);
+    quota = await beginAIRequest(req);
+    if (!quota.allowed) return send(res, quota.body, quota.status);
     const model = process.env.TODOAI_GEMINI_MODEL || 'gemini-2.5-flash-lite';
     const nowIso = new Date().toISOString();
     const parts = [];
@@ -61,6 +65,7 @@ export default async function handler(req, res) {
     });
     const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok) {
+      await releaseAIRequest(quota);
       console.warn(`[todoai/plan] Gemini rejected request status=${upstream.status}`);
       return send(res, { error: 'gemini_request_failed', status: upstream.status }, upstream.status >= 500 ? 502 : upstream.status);
     }
@@ -77,8 +82,10 @@ export default async function handler(req, res) {
     plan.nextStep = String(plan.nextStep || (language === 'zh-Hans' ? '先完成一个最小可执行步骤' : 'Complete one small actionable step first'));
     if (plan.dueDate === '') plan.dueDate = null;
     if (plan.reminderDate === '') plan.reminderDate = null;
-    return send(res, { ...plan, model: upstream.headers.get('x-todoai-model') || model, provider: upstream.headers.get('x-todoai-provider') || 'gemini' }, 200);
+    await commitAIRequest(quota);
+    return send(res, { ...plan, model: upstream.headers.get('x-todoai-model') || model, provider: upstream.headers.get('x-todoai-provider') || 'gemini', usage: quota.usage }, 200);
   } catch (error) {
+    if (quota) await releaseAIRequest(quota);
     console.warn('[todoai/plan] request failed', error?.message || error);
     return send(res, { error: 'plan_failed' }, 502);
   }

@@ -3,6 +3,7 @@
   "rewrites": [
     { "source": "/api/ai/command", "destination": "/api/command" },
     { "source": "/api/ai/plan", "destination": "/api/plan" },
+    { "source": "/api/ai/entitlement", "destination": "/api/entitlement" },
     { "source": "/api/gemini", "destination": "/api/proxy" },
     { "source": "/api/gemini/:path*", "destination": "/api/proxy" }
   ]
