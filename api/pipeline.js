@@ -46,6 +46,8 @@ const MAX_REQUESTS = 30;
  * guessed date. reorganize is an explicit third-stage user action.
  */
 export default async function handler(req, res) {
+  const requestId = String(req.headers['x-vercel-id'] || 'unknown');
+  const startedAt = Date.now();
   if (req.method !== 'POST') return send(res, { error: 'method_not_allowed' }, 405);
   if (req.headers['x-ai-app'] !== 'todoai') return send(res, { error: 'app_header_required' }, 403);
   if (!rateLimit(req)) return send(res, { error: 'rate_limited' }, 429);
@@ -65,16 +67,19 @@ export default async function handler(req, res) {
 
     quota = await beginAIRequest(req);
     if (!quota.allowed) return send(res, quota.body, quota.status);
+    console.info(JSON.stringify({ event: 'todoai_pipeline_start', requestId, mode, hasAttachment: Boolean(attachment) }));
 
     if (mode === 'reorganize') {
       const plan = await reorganize({ plan: body.plan, preference: String(body.preference).trim(), language, outputLanguage, now: body.now || new Date().toISOString() });
       await commitAIRequest(quota);
+      console.info(JSON.stringify({ event: 'todoai_pipeline_done', requestId, stage: 'reorganized', durationMs: Date.now() - startedAt }));
       return send(res, { stage: 'reorganized', intent: intentFromPlan(plan), plan, requiresClarification: false, planConfirmationRequired: false, usage: quota.usage }, 200);
     }
 
     const intent = await interpret({ input, attachment, language, outputLanguage, now: body.now || new Date().toISOString(), deterministic: body.deterministic });
     if (intent.needsClarification) {
       await commitAIRequest(quota);
+      console.info(JSON.stringify({ event: 'todoai_pipeline_done', requestId, stage: 'intent', clarification: true, durationMs: Date.now() - startedAt }));
       return send(res, {
         stage: 'intent',
         intent,
@@ -86,10 +91,11 @@ export default async function handler(req, res) {
 
     const plan = await generatePlan({ input, intent, language, outputLanguage, now: body.now || new Date().toISOString() });
     await commitAIRequest(quota);
+    console.info(JSON.stringify({ event: 'todoai_pipeline_done', requestId, stage: 'plan', clarification: false, durationMs: Date.now() - startedAt }));
     return send(res, { stage: 'plan', intent, plan, requiresClarification: false, planConfirmationRequired: intent.complexity === 'complex', usage: quota.usage }, 200);
   } catch (error) {
     if (quota) await releaseAIRequest(quota);
-    console.warn('[todoai/pipeline] request failed', error?.message || error);
+    console.warn(JSON.stringify({ event: 'todoai_pipeline_failed', requestId, error: error?.message || String(error), durationMs: Date.now() - startedAt }));
     return send(res, { error: 'pipeline_failed' }, 502);
   }
 }
@@ -163,13 +169,15 @@ function attachmentParts(input, attachment) {
 function normalizeIntent(value, input, deterministic) {
   const title = String(value?.title || '').trim() || input;
   const hasDeterministicTime = Boolean(deterministic?.dueDate || deterministic?.reminderDate);
+  const vagueTime = hasVagueTime(input);
+  const needsClarification = !hasDeterministicTime && (vagueTime || value?.needsClarification === true);
   return {
     title,
-    dueDate: hasDeterministicTime ? (deterministic.dueDate || deterministic.reminderDate) : emptyToNull(value?.dueDate),
-    reminderDate: hasDeterministicTime ? (deterministic.reminderDate || deterministic.dueDate) : emptyToNull(value?.reminderDate),
-    timeConfidence: hasDeterministicTime ? 'high' : ['high', 'medium', 'low', 'none'].includes(value?.timeConfidence) ? value.timeConfidence : 'none',
-    needsClarification: hasDeterministicTime ? false : value?.needsClarification === true,
-    clarificationQuestion: String(value?.clarificationQuestion || '').trim(),
+    dueDate: hasDeterministicTime ? (deterministic.dueDate || deterministic.reminderDate) : needsClarification ? null : emptyToNull(value?.dueDate),
+    reminderDate: hasDeterministicTime ? (deterministic.reminderDate || deterministic.dueDate) : needsClarification ? null : emptyToNull(value?.reminderDate),
+    timeConfidence: hasDeterministicTime ? 'high' : needsClarification ? 'low' : ['high', 'medium', 'low', 'none'].includes(value?.timeConfidence) ? value.timeConfidence : 'none',
+    needsClarification,
+    clarificationQuestion: needsClarification ? clarificationQuestion(input, value?.clarificationQuestion) : '',
     priority: ['low', 'normal', 'high'].includes(value?.priority) ? value.priority : 'normal',
     complexity: value?.complexity === 'complex' ? 'complex' : 'simple',
     reason: String(value?.reason || '').trim(),
@@ -206,7 +214,27 @@ function intentFromPlan(plan) {
   };
 }
 
-function emptyToNull(value) { return value ? String(value) : null; }
+function hasVagueTime(input) {
+  const text = String(input || '');
+  const hasDay = /(今天|明天|后天|今晚|明早|周[一二三四五六日]|星期[一二三四五六日])/.test(text);
+  const hasPeriod = /(凌晨|早上|上午|中午|下午|晚上|今晚|明早|晚点|稍后)/.test(text);
+  const hasClock = /(?:凌晨|早上|上午|中午|下午|晚上|今晚|明早)?\s*(?:[0-9]{1,2}|[一二两三四五六七八九十百]+)\s*(?:点|时|:\s*[0-9]{1,2})/.test(text);
+  return hasDay && hasPeriod && !hasClock;
+}
+function clarificationQuestion(input, modelQuestion) {
+  const text = String(input || '');
+  if (text.includes('明天下午')) return '明天下午几点？';
+  if (text.includes('明天晚上')) return '明天晚上几点？';
+  if (text.includes('今晚')) return '今晚几点？';
+  if (/(周|星期)/.test(text) && /(下午|晚上|上午|早上)/.test(text)) return '这天具体几点？';
+  return String(modelQuestion || '').trim() || '具体几点？';
+}
+function emptyToNull(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text || ['null', 'undefined', 'none', 'n/a'].includes(text.toLowerCase())) return null;
+  return text;
+}
 function hasProvider() { return Boolean(process.env.TODOAI_GEMINI_API_KEY || process.env.TODOAI_QWEN_API_KEY || process.env.TODOAI_DEEPSEEK_API_KEY); }
 
 function rateLimit(req) {
