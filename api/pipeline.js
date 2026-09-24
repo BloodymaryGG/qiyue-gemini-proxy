@@ -7,6 +7,7 @@ const INTENT_SCHEMA = {
     title: { type: 'string' },
     dueDate: { type: 'string' },
     reminderDate: { type: 'string' },
+    timeType: { type: 'string', enum: ['start', 'deadline', 'reminder', 'relative', 'unknown'] },
     timeConfidence: { type: 'string', enum: ['high', 'medium', 'low', 'none'] },
     needsClarification: { type: 'boolean' },
     clarificationQuestion: { type: 'string' },
@@ -14,7 +15,7 @@ const INTENT_SCHEMA = {
     complexity: { type: 'string', enum: ['simple', 'complex'] },
     reason: { type: 'string' },
   },
-  required: ['title', 'dueDate', 'reminderDate', 'timeConfidence', 'needsClarification', 'clarificationQuestion', 'priority', 'complexity', 'reason'],
+    required: ['title', 'dueDate', 'reminderDate', 'timeType', 'timeConfidence', 'needsClarification', 'clarificationQuestion', 'priority', 'complexity', 'reason'],
 };
 
 const PLAN_SCHEMA = {
@@ -107,7 +108,7 @@ async function interpret({ input, attachment, language, outputLanguage, now, det
   const result = await structuredCall({
     route: 'pipeline-intent',
     schema: INTENT_SCHEMA,
-    system: `You are Todo AI's fast intent interpreter. Current time is ${now}. Return only JSON matching the schema. Understand natural language dates and times, but never invent a clock time when the user only said a vague period such as tomorrow afternoon, tonight, later, or this weekend. In those cases set needsClarification=true, leave dueDate and reminderDate empty, and ask exactly one short question in ${outputLanguage}. Convert explicit relative time to absolute ISO 8601 UTC. Remove scheduling words from title. Use ${outputLanguage} for title, clarificationQuestion, and reason.${hardFacts}`,
+    system: `You are Todo AI's fast intent interpreter. Current time is ${now}. Return only JSON matching the schema. Understand natural language dates and times, but never invent a clock time when the user only said a vague period such as tomorrow afternoon, tonight, later, or this weekend. In those cases set needsClarification=true, leave dueDate and reminderDate empty, and ask exactly one short question in ${outputLanguage}. Convert explicit relative time to absolute ISO 8601 UTC. Set timeType to start when the user describes when an activity should begin, deadline when they describe when it must be finished, reminder when they explicitly ask to be reminded, relative when the time is expressed as a relative duration such as one hour later, otherwise unknown. Remove scheduling words from title. Use ${outputLanguage} for title, clarificationQuestion, and reason.${hardFacts}`,
     user: input,
     attachment,
   });
@@ -175,6 +176,7 @@ function normalizeIntent(value, input, deterministic) {
     title,
     dueDate: hasDeterministicTime ? (deterministic.dueDate || deterministic.reminderDate) : needsClarification ? null : emptyToNull(value?.dueDate),
     reminderDate: hasDeterministicTime ? (deterministic.reminderDate || deterministic.dueDate) : needsClarification ? null : emptyToNull(value?.reminderDate),
+    timeType: normalizeTimeType(value?.timeType, input, hasDeterministicTime),
     timeConfidence: hasDeterministicTime ? 'high' : needsClarification ? 'low' : ['high', 'medium', 'low', 'none'].includes(value?.timeConfidence) ? value.timeConfidence : 'none',
     needsClarification,
     clarificationQuestion: needsClarification ? clarificationQuestion(input, value?.clarificationQuestion) : '',
@@ -205,6 +207,7 @@ function intentFromPlan(plan) {
     title: plan.title,
     dueDate: plan.dueDate || null,
     reminderDate: plan.reminderDate || null,
+    timeType: plan.reminderDate && plan.dueDate ? 'unknown' : 'unknown',
     timeConfidence: plan.dueDate || plan.reminderDate ? 'high' : 'none',
     needsClarification: false,
     clarificationQuestion: '',
@@ -212,6 +215,16 @@ function intentFromPlan(plan) {
     complexity: plan.subtasks.length ? 'complex' : 'simple',
     reason: '',
   };
+}
+function normalizeTimeType(value, input, hasDeterministicTime) {
+  const allowed = ['start', 'deadline', 'reminder', 'relative', 'unknown'];
+  if (allowed.includes(value)) return value;
+  const text = String(input || '');
+  if (/(分钟后|小时后|天后|周后|一会儿后|稍后)/.test(text)) return 'relative';
+  if (/(提醒我|叫我|别让我忘|不要忘)/.test(text)) return 'reminder';
+  if (/(截止|交作业|交稿|完成|之前|前完成)/.test(text)) return 'deadline';
+  if (hasDeterministicTime || /(上课|开始|做听力|学习|去|参加)/.test(text)) return 'start';
+  return 'unknown';
 }
 
 function hasVagueTime(input) {
