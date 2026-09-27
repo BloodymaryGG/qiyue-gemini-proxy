@@ -32,7 +32,7 @@ export default async function handler(req, res) {
   if (recent.length >= MAX_REQUESTS) return send(res, { error: 'rate_limited' }, 429);
   recent.push(now); attempts.set(ip, recent);
   const apiKey = process.env.TODOAI_GEMINI_API_KEY;
-  if (!apiKey && !process.env.TODOAI_QWEN_API_KEY && !process.env.TODOAI_DEEPSEEK_API_KEY) return send(res, { error: 'todoai_model_not_configured' }, 503);
+  if (!apiKey && !process.env.TODOAI_QWEN_API_KEY && !process.env.TODOAI_DEEPSEEK_API_KEY && !process.env.TODOAI_GATEWAY_TOKEN) return send(res, { error: 'todoai_model_not_configured' }, 503);
   try {
     const body = typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
     const input = String(body?.input || '').trim();

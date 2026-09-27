@@ -8,7 +8,8 @@ API keys private and gives the iOS client one stable endpoint.
 
 Todo AI-specific environment variables:
 
-- `TODOAI_GEMINI_API_KEY`, optional `TODOAI_GEMINI_MODEL`
+- `TODOAI_GATEWAY_TOKEN`, optional `TODOAI_GATEWAY_BASE_URL` and `TODOAI_GATEWAY_MODEL` — when present, Todo AI routes model requests through the shared Qiyue AI Gateway. Keep this token server-side; never put it in the iOS app.
+- `TODOAI_GEMINI_API_KEY`, optional `TODOAI_GEMINI_MODEL` (legacy direct-provider path when the Gateway token is absent)
 - `TODOAI_QWEN_API_KEY`, optional `TODOAI_QWEN_MODEL`, `TODOAI_QWEN_BASE_URL`, `TODOAI_QWEN_VISION_MODEL`
 - `TODOAI_DEEPSEEK_API_KEY`, optional `TODOAI_DEEPSEEK_MODEL`, `TODOAI_DEEPSEEK_BASE_URL`
 - `TODOAI_PROVIDER_ORDER` (default: `gemini,qwen,deepseek`)

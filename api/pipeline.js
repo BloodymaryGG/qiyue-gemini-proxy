@@ -1,5 +1,6 @@
 import { fetchTodoAI } from '../lib/todoai-gemini.js';
 import { beginAIRequest, commitAIRequest, releaseAIRequest } from '../lib/access.js';
+import { recognizeTimeIntent } from '../lib/time-intent.js';
 
 const INTENT_SCHEMA = {
   type: 'object',
@@ -7,7 +8,7 @@ const INTENT_SCHEMA = {
     title: { type: 'string' },
     dueDate: { type: 'string' },
     reminderDate: { type: 'string' },
-    timeType: { type: 'string', enum: ['start', 'deadline', 'reminder', 'relative', 'unknown'] },
+    timeType: { type: 'string', enum: ['start', 'deadline', 'reminder', 'relative', 'exactTime', 'dateOnly', 'vague', 'unknown'] },
     timeConfidence: { type: 'string', enum: ['high', 'medium', 'low', 'none'] },
     needsClarification: { type: 'boolean' },
     clarificationQuestion: { type: 'string' },
@@ -77,7 +78,7 @@ export default async function handler(req, res) {
       return send(res, { stage: 'reorganized', intent: intentFromPlan(plan), plan, requiresClarification: false, planConfirmationRequired: false, usage: quota.usage }, 200);
     }
 
-    const intent = await interpret({ input, attachment, language, outputLanguage, now: body.now || new Date().toISOString(), deterministic: body.deterministic });
+    const intent = await interpret({ input, attachment, language, outputLanguage, now: body.now || new Date().toISOString(), timeZone: body.timeZone || 'Asia/Shanghai', deterministic: body.deterministic });
     if (intent.needsClarification) {
       await commitAIRequest(quota);
       console.info(JSON.stringify({ event: 'todoai_pipeline_done', requestId, stage: 'intent', clarification: true, durationMs: Date.now() - startedAt }));
@@ -101,18 +102,22 @@ export default async function handler(req, res) {
   }
 }
 
-async function interpret({ input, attachment, language, outputLanguage, now, deterministic }) {
+async function interpret({ input, attachment, language, outputLanguage, now, timeZone, deterministic }) {
+  const recognized = recognizeTimeIntent(input, { now, timeZone, language });
   const hardFacts = deterministic && (deterministic.dueDate || deterministic.reminderDate)
     ? `\nDeterministic local parser facts (these are authoritative and MUST NOT be changed): ${JSON.stringify({ dueDate: deterministic.dueDate || null, reminderDate: deterministic.reminderDate || deterministic.dueDate || null })}`
+    : '';
+  const recognizedFacts = recognized
+    ? `\nMicrosoft Recognizers time facts (validate against these; never replace a resolved value with a guessed clock): ${JSON.stringify(recognized)}`
     : '';
   const result = await structuredCall({
     route: 'pipeline-intent',
     schema: INTENT_SCHEMA,
-    system: `You are Todo AI's fast intent interpreter. Current time is ${now}. Return only JSON matching the schema. Understand natural language dates and times, but never invent a clock time when the user only said a vague period such as tomorrow afternoon, tonight, later, or this weekend. In those cases set needsClarification=true, leave dueDate and reminderDate empty, and ask exactly one short question in ${outputLanguage}. Convert explicit relative time to absolute ISO 8601 UTC. Set timeType to start when the user describes when an activity should begin, deadline when they describe when it must be finished, reminder when they explicitly ask to be reminded, relative when the time is expressed as a relative duration such as one hour later, otherwise unknown. Remove scheduling words from title. Use ${outputLanguage} for title, clarificationQuestion, and reason.${hardFacts}`,
+    system: `You are Todo AI's fast intent interpreter. Current time is ${now} in timezone ${timeZone}. Return only JSON matching the schema. Use the provided Microsoft Recognizers facts as the first-pass time interpretation. Understand natural language dates and times, but never invent a clock time when the user only said a vague period such as tomorrow afternoon, tonight, later, or this weekend. In those cases set needsClarification=true, leave dueDate and reminderDate empty, and ask exactly one short question in ${outputLanguage}. Convert explicit relative time to absolute ISO 8601 UTC. timeType must be one of start, deadline, reminder, relative, exactTime, dateOnly, vague, unknown. Distinguish when an activity starts from when it must be finished and from when the user wants a reminder. A dateOnly result means the calendar day is known but no clock was supplied; use the end of that local day only as a due boundary, never as a reminder. Remove scheduling words from title, and trim punctuation. Use ${outputLanguage} for title, clarificationQuestion, and reason.${hardFacts}${recognizedFacts}`,
     user: input,
     attachment,
   });
-  const value = normalizeIntent(result, input, deterministic);
+  const value = normalizeIntent(result, input, deterministic, recognized);
   return value;
 }
 
@@ -167,19 +172,29 @@ function attachmentParts(input, attachment) {
   return parts;
 }
 
-function normalizeIntent(value, input, deterministic) {
+function normalizeIntent(value, input, deterministic, recognized) {
   const title = String(value?.title || '').trim() || input;
   const hasDeterministicTime = Boolean(deterministic?.dueDate || deterministic?.reminderDate);
+  const hasRecognizedTime = recognized?.status === 'resolved';
+  const recognizedIsAmbiguous = recognized?.status === 'ambiguous';
   const vagueTime = hasVagueTime(input);
-  const needsClarification = !hasDeterministicTime && (vagueTime || value?.needsClarification === true);
+  const needsClarification = !hasDeterministicTime && (recognizedIsAmbiguous || vagueTime || value?.needsClarification === true);
+  const dueDate = hasDeterministicTime
+    ? (deterministic.dueDate || deterministic.reminderDate)
+    : hasRecognizedTime ? recognized.dueDate
+      : needsClarification ? null : emptyToNull(value?.dueDate);
+  const reminderDate = hasDeterministicTime
+    ? (deterministic.reminderDate || (recognized?.kind !== 'dateOnly' ? deterministic.dueDate : null))
+    : hasRecognizedTime ? recognized.reminderDate
+      : needsClarification ? null : emptyToNull(value?.reminderDate);
   return {
     title,
-    dueDate: hasDeterministicTime ? (deterministic.dueDate || deterministic.reminderDate) : needsClarification ? null : emptyToNull(value?.dueDate),
-    reminderDate: hasDeterministicTime ? (deterministic.reminderDate || deterministic.dueDate) : needsClarification ? null : emptyToNull(value?.reminderDate),
-    timeType: normalizeTimeType(value?.timeType, input, hasDeterministicTime),
-    timeConfidence: hasDeterministicTime ? 'high' : needsClarification ? 'low' : ['high', 'medium', 'low', 'none'].includes(value?.timeConfidence) ? value.timeConfidence : 'none',
+    dueDate,
+    reminderDate,
+    timeType: recognized?.kind || normalizeTimeType(value?.timeType, input, hasDeterministicTime),
+    timeConfidence: hasDeterministicTime || hasRecognizedTime ? 'high' : needsClarification ? 'low' : ['high', 'medium', 'low', 'none'].includes(value?.timeConfidence) ? value.timeConfidence : 'none',
     needsClarification,
-    clarificationQuestion: needsClarification ? clarificationQuestion(input, value?.clarificationQuestion) : '',
+    clarificationQuestion: needsClarification ? (recognized?.question || clarificationQuestion(input, value?.clarificationQuestion)) : '',
     priority: ['low', 'normal', 'high'].includes(value?.priority) ? value.priority : 'normal',
     complexity: value?.complexity === 'complex' ? 'complex' : 'simple',
     reason: String(value?.reason || '').trim(),
@@ -248,7 +263,14 @@ function emptyToNull(value) {
   if (!text || ['null', 'undefined', 'none', 'n/a'].includes(text.toLowerCase())) return null;
   return text;
 }
-function hasProvider() { return Boolean(process.env.TODOAI_GEMINI_API_KEY || process.env.TODOAI_QWEN_API_KEY || process.env.TODOAI_DEEPSEEK_API_KEY); }
+function hasProvider() {
+  return Boolean(
+    process.env.TODOAI_GATEWAY_TOKEN ||
+    process.env.TODOAI_GEMINI_API_KEY ||
+    process.env.TODOAI_QWEN_API_KEY ||
+    process.env.TODOAI_DEEPSEEK_API_KEY,
+  );
+}
 
 function rateLimit(req) {
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
